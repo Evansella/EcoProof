@@ -134,3 +134,20 @@
     (err u110)
   )
 )
+
+;; Read-only functions for data validation
+(define-read-only (get-project (project-id uint))
+  (map-get? eco-projects project-id)
+)
+
+(define-read-only (get-credit (credit-id uint))
+  (map-get? carbon-credits credit-id)
+)
+
+(define-read-only (get-listing (listing-id uint))
+  (map-get? marketplace listing-id)
+)
+
+(define-read-only (is-authorized-issuer (user principal))
+  (default-to false (map-get? authorized-issuers user))
+) 
