@@ -1,0 +1,153 @@
+(define-constant system-admin tx-sender)
+(define-constant max-project-name-length u100)
+(define-constant max-project-desc-length u300)
+(define-constant min-credit-amount u1)
+(define-constant max-credit-amount u1000000)
+(define-constant min-sale-price u1)
+
+(define-map eco-projects uint { name: (string-ascii 100), description: (string-ascii 300) })
+(define-map authorized-issuers principal bool)
+(define-map carbon-credits uint { project-id: uint, quantity: uint, owner: principal, is-retired: bool })
+(define-map marketplace uint { credit-id: uint, seller: principal, price: uint })
+(define-data-var project-counter uint u1)
+(define-data-var credit-counter uint u1)
+(define-data-var listing-counter uint u1)
+
+(define-private (is-valid-principal (user principal))
+  (not (is-eq user 'SP000000000000000000002Q6VF78))
+)
+
+(define-private (is-valid-string (text (string-ascii 100)))
+  (> (len text) u0)
+)
+
+(define-private (is-valid-description (desc (string-ascii 300)))
+  (> (len desc) u0)
+)
+
+(define-private (is-valid-amount (amount uint))
+  (and (>= amount min-credit-amount) (<= amount max-credit-amount))
+)
+
+(define-private (is-valid-price (price uint))
+  (>= price min-sale-price)
+)
+
+(define-private (project-exists (project-id uint))
+  (is-some (map-get? eco-projects project-id))
+)
+
+(define-private (credit-exists (credit-id uint))
+  (is-some (map-get? carbon-credits credit-id))
+)
+
+(define-private (listing-exists (listing-id uint))
+  (is-some (map-get? marketplace listing-id))
+)
+
+(define-public (authorize-issuer (new-issuer principal))
+  (begin
+    (asserts! (is-eq tx-sender system-admin) (err u100))
+    (asserts! (is-valid-principal new-issuer) (err u200))
+    (asserts! (not (is-eq new-issuer system-admin)) (err u201))
+    (map-set authorized-issuers new-issuer true)
+    (ok true)
+  )
+)
+
+(define-public (create-project (project-name (string-ascii 100)) (project-desc (string-ascii 300)))
+  (let ((current-id (var-get project-counter)))
+    (begin
+      (asserts! (is-valid-string project-name) (err u202))
+      (asserts! (is-valid-description project-desc) (err u203))
+      (map-set eco-projects current-id { name: project-name, description: project-desc })
+      (var-set project-counter (+ current-id u1))
+      (ok current-id)
+    )
+  )
+)
+
+(define-public (mint-credits (project-id uint) (credit-amount uint) (recipient principal))
+  (begin
+    (asserts! (default-to false (map-get? authorized-issuers tx-sender)) (err u101))
+    (asserts! (project-exists project-id) (err u204))
+    (asserts! (is-valid-amount credit-amount) (err u205))
+    (asserts! (is-valid-principal recipient) (err u206))
+    (let ((new-credit-id (var-get credit-counter)))
+      (map-set carbon-credits new-credit-id { project-id: project-id, quantity: credit-amount, owner: recipient, is-retired: false })
+      (var-set credit-counter (+ new-credit-id u1))
+      (ok new-credit-id)
+    )
+  )
+)
+
+(define-public (retire-credit (credit-id uint))
+  (match (map-get? carbon-credits credit-id)
+    credit-data
+      (begin
+        (asserts! (credit-exists credit-id) (err u207))
+        (asserts! (is-eq tx-sender (get owner credit-data)) (err u102))
+        (asserts! (not (get is-retired credit-data)) (err u208))
+        (map-set carbon-credits credit-id (merge credit-data { is-retired: true }))
+        (ok true)
+      )
+    (err u103)
+  )
+)
+
+(define-public (list-for-sale (credit-id uint) (sale-price uint))
+  (match (map-get? carbon-credits credit-id)
+    credit-info
+      (begin
+        (asserts! (credit-exists credit-id) (err u209))
+        (asserts! (is-valid-price sale-price) (err u210))
+        (asserts! (is-eq tx-sender (get owner credit-info)) (err u104))
+        (asserts! (not (get is-retired credit-info)) (err u105))
+        (let ((new-listing-id (var-get listing-counter)))
+          (map-set marketplace new-listing-id { credit-id: credit-id, seller: tx-sender, price: sale-price })
+          (var-set listing-counter (+ new-listing-id u1))
+          (ok new-listing-id)
+        )
+      )
+    (err u106)
+  )
+)
+
+(define-public (purchase-credit (listing-id uint))
+  (match (map-get? marketplace listing-id)
+    sale-info
+      (match (map-get? carbon-credits (get credit-id sale-info))
+        credit-details
+          (begin
+            (asserts! (listing-exists listing-id) (err u211))
+            (asserts! (is-eq (get owner credit-details) (get seller sale-info)) (err u107))
+            (asserts! (not (is-eq tx-sender (get seller sale-info))) (err u111))
+            (asserts! (>= (stx-get-balance tx-sender) (get price sale-info)) (err u108))
+            (asserts! (not (get is-retired credit-details)) (err u212))
+            (try! (stx-transfer? (get price sale-info) tx-sender (get seller sale-info)))
+            (map-set carbon-credits (get credit-id sale-info) (merge credit-details { owner: tx-sender }))
+            (map-delete marketplace listing-id)
+            (ok true)
+          )
+        (err u109)
+      )
+    (err u110)
+  )
+)
+
+;; Read-only functions for data validation
+(define-read-only (get-project (project-id uint))
+  (map-get? eco-projects project-id)
+)
+
+(define-read-only (get-credit (credit-id uint))
+  (map-get? carbon-credits credit-id)
+)
+
+(define-read-only (get-listing (listing-id uint))
+  (map-get? marketplace listing-id)
+)
+
+(define-read-only (is-authorized-issuer (user principal))
+  (default-to false (map-get? authorized-issuers user))
+) 
